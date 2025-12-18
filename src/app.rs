@@ -10,6 +10,7 @@ use crate::store::{InstallOptions, Store};
 use anyhow::{Context, Result, anyhow};
 use semver::Version;
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
 use std::process::{Command as ProcCommand, ExitCode};
 use std::time::{Duration, Instant};
@@ -41,6 +42,7 @@ pub async fn run(cli: Cli) -> Result<ExitCode> {
             force,
             args,
         } => cmd_x(spec, bin, offline, force, args).await,
+        Command::Run { script, args } => cmd_run(script, args),
     }
 }
 
@@ -105,6 +107,258 @@ async fn cmd_add(specs: Vec<String>, dev: bool, no_install: bool) -> Result<Exit
         return Ok(ExitCode::SUCCESS);
     }
     cmd_install(false, false, false).await
+}
+
+fn cmd_run(script: String, args: Vec<String>) -> Result<ExitCode> {
+    let paths = ProjectPaths::discover()?;
+
+    let raw = Manifest::load_raw(&paths.package_json)?;
+    let scripts = raw
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow!("package.json has no scripts"))?;
+
+    let cmd = scripts
+        .get(&script)
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| {
+            let available = scripts.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+            if available.is_empty() {
+                anyhow!("package.json has no scripts")
+            } else {
+                anyhow!(
+                    "unknown script `{}` (available: {})",
+                    script,
+                    available.join(", ")
+                )
+            }
+        })?;
+
+    if cmd.is_empty() {
+        return Err(anyhow!("script `{}` is empty", script));
+    }
+
+    let status = run_script_command(&paths, &cmd, &args)?;
+    Ok(exitcode_from_status(status))
+}
+
+fn run_script_command(
+    paths: &ProjectPaths,
+    script_cmd: &str,
+    args: &[String],
+) -> Result<std::process::ExitStatus> {
+    let mut cmd = if script_needs_shell(script_cmd) {
+        shell_command_for_script(script_cmd, args)?
+    } else {
+        let words = split_command_words(script_cmd)?;
+        let (exe, rest) = words
+            .split_first()
+            .ok_or_else(|| anyhow!("script command is empty"))?;
+        let mut c = ProcCommand::new(exe);
+        c.args(rest);
+        c.args(args);
+        c
+    };
+
+    cmd.current_dir(&paths.root);
+    prepend_node_modules_bin_to_path(&mut cmd, paths);
+
+    cmd.status()
+        .with_context(|| format!("run script `{}`", script_cmd))
+}
+
+fn prepend_node_modules_bin_to_path(cmd: &mut ProcCommand, paths: &ProjectPaths) {
+    let bin_dir = paths.node_modules.join(".bin");
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut new_path = OsString::new();
+    new_path.push(bin_dir.as_os_str());
+    if let Some(old) = std::env::var_os("PATH") {
+        new_path.push(sep);
+        new_path.push(old);
+    }
+    cmd.env("PATH", new_path);
+}
+
+fn script_needs_shell(script_cmd: &str) -> bool {
+    let s = script_cmd;
+    if s.contains('\n') {
+        return true;
+    }
+    if s.contains("&&")
+        || s.contains("||")
+        || s.contains('|')
+        || s.contains('<')
+        || s.contains('>')
+        || s.contains(';')
+        || s.contains('&')
+    {
+        return true;
+    }
+    if cfg!(not(windows)) && starts_with_posix_env_assignments(s) {
+        return true;
+    }
+    false
+}
+
+fn starts_with_posix_env_assignments(s: &str) -> bool {
+    let mut i = 0usize;
+    let bytes = s.as_bytes();
+
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return false;
+        }
+
+        if !is_env_key_start(bytes[i]) {
+            return false;
+        }
+        i += 1;
+        while i < bytes.len() && is_env_key_continue(bytes[i]) {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            return false;
+        }
+        i += 1;
+
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return true;
+        }
+
+        if !is_env_key_start(bytes[i]) {
+            return true;
+        }
+    }
+
+    true
+}
+
+fn is_env_key_start(b: u8) -> bool {
+    (b as char).is_ascii_alphabetic() || b == b'_'
+}
+
+fn is_env_key_continue(b: u8) -> bool {
+    (b as char).is_ascii_alphanumeric() || b == b'_'
+}
+
+fn shell_command_for_script(script_cmd: &str, args: &[String]) -> Result<ProcCommand> {
+    #[cfg(windows)]
+    {
+        let mut full = script_cmd.to_string();
+        if !args.is_empty() {
+            full.push(' ');
+            full.push_str(
+                &args
+                    .iter()
+                    .map(|a| windows_list2cmdline_arg(a))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        let mut c = ProcCommand::new("cmd.exe");
+        c.args(["/d", "/s", "/c", &full]);
+        return Ok(c);
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = ProcCommand::new("sh");
+        c.arg("-lc").arg(format!("{script_cmd} \"$@\"")).arg("--");
+        c.args(args);
+        return Ok(c);
+    }
+}
+
+fn windows_list2cmdline_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_string();
+    }
+
+    let needs_quotes = arg.bytes().any(|b| b == b' ' || b == b'\t' || b == b'"');
+    if !needs_quotes {
+        return arg.to_string();
+    }
+
+    let mut out = String::new();
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                if backslashes > 0 {
+                    out.push_str(&"\\".repeat(backslashes));
+                    backslashes = 0;
+                }
+                out.push(ch);
+            }
+        }
+    }
+    if backslashes > 0 {
+        out.push_str(&"\\".repeat(backslashes * 2));
+    }
+    out.push('"');
+    out
+}
+
+fn split_command_words(s: &str) -> Result<Vec<String>> {
+    let mut words = Vec::<String>::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+
+    for ch in s.chars() {
+        if escape {
+            cur.push(ch);
+            escape = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if cfg!(not(windows)) && !in_single => {
+                escape = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(ch),
+        }
+    }
+
+    if escape {
+        cur.push('\\');
+    }
+    if in_single || in_double {
+        return Err(anyhow!("unclosed quote in script command"));
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    Ok(words)
 }
 
 async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) -> Result<ExitCode> {
@@ -455,6 +709,30 @@ fn load_lock_with_hash(path: &std::path::Path) -> Result<Option<(Lockfile, Strin
     let lock: Lockfile =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     Ok(Some((lock, hex)))
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    #[test]
+    fn split_command_words_basic() {
+        let v = split_command_words("next dev").unwrap();
+        assert_eq!(v, vec!["next", "dev"]);
+    }
+
+    #[test]
+    fn split_command_words_quotes() {
+        let v = split_command_words(r#"node -e "console.log(1)""#).unwrap();
+        assert_eq!(v, vec!["node", "-e", "console.log(1)"]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn split_command_words_windows_paths() {
+        let v = split_command_words(r#"node .\scripts\foo.js"#).unwrap();
+        assert_eq!(v, vec!["node", r#".\scripts\foo.js"#]);
+    }
 }
 
 fn is_up_to_date(

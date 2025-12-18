@@ -4,6 +4,13 @@ The fastest JavaScript package manager we've seen.
 
 `vx` is a fast, cache-first npm package installer prototype written in Rust.
 
+## CLI
+
+- `vx install` installs dependencies (default command)
+- `vx add <spec...>` adds dependencies
+- `vx run <script> -- <args...>` runs a `package.json` script (npm run-like)
+- `vx x <pkg> -- <args...>` runs a package binary without adding it
+
 ## npm package
 
 This repo includes an npm publish setup under `npm/`:

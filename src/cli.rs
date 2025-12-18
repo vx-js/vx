@@ -53,6 +53,14 @@ pub enum Command {
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
+    /// Run a package.json script (npm run-like)
+    Run {
+        /// Script name from package.json `scripts`, e.g. `build`
+        script: String,
+        /// Arguments passed to the script command (use `--` to separate)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
