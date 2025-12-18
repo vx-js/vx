@@ -1,0 +1,25 @@
+{
+  "name": "@vx-js/vx-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "Platform-specific binary for @vx-js/vx (win32 x64 MSVC).",
+  "license": "UNLICENSED",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "bin/vx.exe",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/build-npm-binary.cjs --out bin/vx.exe"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
+

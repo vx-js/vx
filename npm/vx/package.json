@@ -1,0 +1,24 @@
+{
+  "name": "@vx-js/vx",
+  "version": "0.1.0",
+  "description": "A fast, cache-first npm package installer (prototype).",
+  "license": "UNLICENSED",
+  "bin": {
+    "vx": "./bin/vx.js"
+  },
+  "files": [
+    "bin/vx.js",
+    "lib/**",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@vx-js/vx-win32-x64-msvc": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
+
