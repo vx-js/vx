@@ -122,6 +122,9 @@ jobs:
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -146,9 +149,6 @@ jobs:
             os: macos-latest
             pkgdir: npm/vx-darwin-arm64
             rustTarget: aarch64-apple-darwin
-
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -187,6 +187,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -207,7 +208,6 @@ jobs:
     needs: canary-version
     if: >-
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch')
-      && secrets.NPM_TOKEN != ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -236,6 +236,7 @@ jobs:
 
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -281,10 +282,10 @@ jobs:
       - publish-npm-platform-canary
     if: >-
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch')
-      && secrets.NPM_TOKEN != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
