@@ -148,6 +148,18 @@ fn run_script_command(
     script_cmd: &str,
     args: &[String],
 ) -> Result<std::process::ExitStatus> {
+    // On Windows, npm "bin" shims are typically `.cmd` files in `node_modules/.bin`.
+    // `std::process::Command` does not reliably resolve `.cmd` from PATH, so use `cmd.exe`
+    // like `npm run` does.
+    if cfg!(windows) {
+        let mut cmd = shell_command_for_script(script_cmd, args)?;
+        cmd.current_dir(&paths.root);
+        prepend_node_modules_bin_to_path(&mut cmd, paths);
+        return cmd
+            .status()
+            .with_context(|| format!("run script `{}`", script_cmd));
+    }
+
     let mut cmd = if script_needs_shell(script_cmd) {
         shell_command_for_script(script_cmd, args)?
     } else {
@@ -164,8 +176,17 @@ fn run_script_command(
     cmd.current_dir(&paths.root);
     prepend_node_modules_bin_to_path(&mut cmd, paths);
 
-    cmd.status()
-        .with_context(|| format!("run script `{}`", script_cmd))
+    match cmd.status() {
+        Ok(status) => Ok(status),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let mut cmd = shell_command_for_script(script_cmd, args)?;
+            cmd.current_dir(&paths.root);
+            prepend_node_modules_bin_to_path(&mut cmd, paths);
+            cmd.status()
+        }
+        Err(err) => Err(err),
+    }
+    .with_context(|| format!("run script `{}`", script_cmd))
 }
 
 fn prepend_node_modules_bin_to_path(cmd: &mut ProcCommand, paths: &ProjectPaths) {
