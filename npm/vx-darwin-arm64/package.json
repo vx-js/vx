@@ -1,0 +1,26 @@
+{
+	"name": "@vx-js/vx-darwin-arm64",
+	"version": "0.1.0",
+	"description": "Platform-specific binary for @vx-js/vx (darwin arm64).",
+	"license": "MIT",
+	"os": [
+		"darwin"
+	],
+	"cpu": [
+		"arm64"
+	],
+	"main": "./index.js",
+	"files": [
+		"index.js",
+		"bin/vx",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"prepack": "node ../../scripts/build-npm-binary.cjs --target aarch64-apple-darwin --out bin/vx"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
+

@@ -3,6 +3,10 @@ const { spawn } = require("node:child_process");
 function platformPackage() {
   const { platform, arch } = process;
   if (platform === "win32" && arch === "x64") return "@vx-js/vx-win32-x64-msvc";
+  if (platform === "linux" && arch === "x64") return "@vx-js/vx-linux-x64-gnu";
+  if (platform === "linux" && arch === "arm64") return "@vx-js/vx-linux-arm64-gnu";
+  if (platform === "darwin" && arch === "x64") return "@vx-js/vx-darwin-x64";
+  if (platform === "darwin" && arch === "arm64") return "@vx-js/vx-darwin-arm64";
   return null;
 }
 
@@ -43,4 +47,3 @@ child.on("exit", (code, signal) => {
   }
   process.exit(code ?? 1);
 });
-

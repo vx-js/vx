@@ -16,6 +16,10 @@
 		"node": ">=18"
 	},
 	"optionalDependencies": {
+		"@vx-js/vx-darwin-arm64": "0.1.0",
+		"@vx-js/vx-darwin-x64": "0.1.0",
+		"@vx-js/vx-linux-arm64-gnu": "0.1.0",
+		"@vx-js/vx-linux-x64-gnu": "0.1.0",
 		"@vx-js/vx-win32-x64-msvc": "0.1.0"
 	},
 	"publishConfig": {

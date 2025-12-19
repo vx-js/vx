@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,19 +18,29 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bin: vx
+            asset: vx-x86_64-unknown-linux-gnu
           - name: linux-arm64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             linker: aarch64-linux-gnu-gcc
+            bin: vx
+            asset: vx-aarch64-unknown-linux-gnu
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
+            bin: vx
+            asset: vx-x86_64-apple-darwin
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+            bin: vx
+            asset: vx-aarch64-apple-darwin
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            bin: vx.exe
+            asset: vx-x86_64-pc-windows-msvc.exe
 
     defaults:
       run:
@@ -55,3 +67,242 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare release asset
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+
+  canary-version:
+    name: Canary version
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Compute canary version
+        id: compute
+        run: |
+          node -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('npm/vx/package.json','utf8')); const base=pkg.version; const ts=new Date().toISOString().replace(/\\D/g,'').slice(0,14); const runId=process.env.GITHUB_RUN_ID||''; const suffix=runId?`${ts}-${runId}`:ts; const v=`${base}-canary-${suffix}`; console.log(v); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${v}\\n`);"
+
+  publish-npm-platform:
+    name: Publish npm platform packages (${{ matrix.name }})
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            pkgdir: npm/vx-win32-x64-msvc
+            rustTarget: x86_64-pc-windows-msvc
+          - name: linux-x64
+            os: ubuntu-latest
+            pkgdir: npm/vx-linux-x64-gnu
+            rustTarget: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-latest
+            pkgdir: npm/vx-linux-arm64-gnu
+            rustTarget: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            pkgdir: npm/vx-darwin-x64
+            rustTarget: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            pkgdir: npm/vx-darwin-arm64
+            rustTarget: aarch64-apple-darwin
+
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux cross toolchain
+        if: matrix.rustTarget == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure Linux cross linker
+        if: matrix.rustTarget == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Publish
+        working-directory: ${{ matrix.pkgdir }}
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-npm-wrapper:
+    name: Publish npm wrapper package
+    needs: publish-npm-platform
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      - name: Publish @vx-js/vx
+        working-directory: npm/vx
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-npm-platform-canary:
+    name: Publish npm platform packages canary (${{ matrix.name }})
+    needs: canary-version
+    if: >-
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch')
+      && secrets.NPM_TOKEN != ''
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            pkgdir: npm/vx-win32-x64-msvc
+            rustTarget: x86_64-pc-windows-msvc
+          - name: linux-x64
+            os: ubuntu-latest
+            pkgdir: npm/vx-linux-x64-gnu
+            rustTarget: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-latest
+            pkgdir: npm/vx-linux-arm64-gnu
+            rustTarget: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            pkgdir: npm/vx-darwin-x64
+            rustTarget: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            pkgdir: npm/vx-darwin-arm64
+            rustTarget: aarch64-apple-darwin
+
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux cross toolchain
+        if: matrix.rustTarget == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure Linux cross linker
+        if: matrix.rustTarget == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Set canary version
+        working-directory: ${{ matrix.pkgdir }}
+        env:
+          CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
+        run: |
+          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=process.env.CANARY_VERSION; fs.writeFileSync(p, JSON.stringify(j, null, '\\t')+'\\n');"
+
+      - name: Publish (canary)
+        working-directory: ${{ matrix.pkgdir }}
+        run: npm publish --tag canary
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-npm-wrapper-canary:
+    name: Publish npm wrapper package canary
+    needs:
+      - canary-version
+      - publish-npm-platform-canary
+    if: >-
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch')
+      && secrets.NPM_TOKEN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+
+      - name: Set canary version (and optionalDependencies)
+        working-directory: npm/vx
+        env:
+          CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
+        run: |
+          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=process.env.CANARY_VERSION; j.optionalDependencies=j.optionalDependencies||{}; for (const k of Object.keys(j.optionalDependencies)) j.optionalDependencies[k]=process.env.CANARY_VERSION; fs.writeFileSync(p, JSON.stringify(j, null, '\\t')+'\\n');"
+
+      - name: Publish @vx-js/vx (canary)
+        working-directory: npm/vx
+        run: npm publish --tag canary
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

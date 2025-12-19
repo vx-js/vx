@@ -17,7 +17,7 @@
 		"LICENSE"
 	],
 	"scripts": {
-		"prepack": "node ../../scripts/build-npm-binary.cjs --out bin/vx.exe"
+		"prepack": "node ../../scripts/build-npm-binary.cjs --target x86_64-pc-windows-msvc --out bin/vx.exe"
 	},
 	"publishConfig": {
 		"access": "public"
