@@ -3,6 +3,10 @@
 	"version": "0.1.0",
 	"description": "Platform-specific binary for @vx-js/vx (linux x64 GNU).",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/vx-js/vx"
+	},
 	"os": [
 		"linux"
 	],
@@ -23,4 +27,3 @@
 		"access": "public"
 	}
 }
-

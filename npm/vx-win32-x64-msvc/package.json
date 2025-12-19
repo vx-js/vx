@@ -3,6 +3,10 @@
 	"version": "0.1.0",
 	"description": "Platform-specific binary for @vx-js/vx (win32 x64 MSVC).",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/vx-js/vx"
+	},
 	"os": [
 		"win32"
 	],
