@@ -267,7 +267,7 @@ jobs:
         env:
           CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
         run: |
-          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=String(process.env.CANARY_VERSION||'').trim(); fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\\n');"
+          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=String(process.env.CANARY_VERSION||'').trim(); fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\n');"
 
       - name: Publish (canary)
         working-directory: ${{ matrix.pkgdir }}
@@ -300,7 +300,7 @@ jobs:
         env:
           CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
         run: |
-          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); const v=String(process.env.CANARY_VERSION||'').trim(); j.version=v; j.optionalDependencies=j.optionalDependencies||{}; for (const k of Object.keys(j.optionalDependencies)) j.optionalDependencies[k]=v; fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\\n');"
+          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); const v=String(process.env.CANARY_VERSION||'').trim(); j.version=v; j.optionalDependencies=j.optionalDependencies||{}; for (const k of Object.keys(j.optionalDependencies)) j.optionalDependencies[k]=v; fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\n');"
 
       - name: Publish @vx-js/vx (canary)
         working-directory: npm/vx
