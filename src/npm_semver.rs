@@ -48,7 +48,7 @@ fn parse_req_loose(s: &str) -> Result<VersionReq> {
     if let Some(hyphen_idx) = s.find(" - ") {
         let low = s[..hyphen_idx].trim();
         let high = s[hyphen_idx + 3..].trim();
-        
+
         // Parse the low version
         let low_ver = if low.is_empty() {
             Version::parse("0.0.0")?
@@ -58,7 +58,7 @@ fn parse_req_loose(s: &str) -> Result<VersionReq> {
             Version::parse(&normalized_low)
                 .with_context(|| format!("invalid lower bound in hyphen range: `{low}`"))?
         };
-        
+
         // Parse the high version
         let high_ver = if high.is_empty() {
             return Err(anyhow!("missing upper bound in hyphen range"));
@@ -68,10 +68,10 @@ fn parse_req_loose(s: &str) -> Result<VersionReq> {
             Version::parse(&normalized_high)
                 .with_context(|| format!("invalid upper bound in hyphen range: `{high}`"))?
         };
-        
+
         // Determine if high is a partial version (e.g., "3" vs "3.0.0")
         let high_is_partial = is_partial_version(high);
-        
+
         // Convert to semver range format (VersionReq uses comma-separated constraints)
         // If high is partial (e.g., "3"), treat as X-range: "1 - 3" -> ">=1.0.0, <4.0.0"
         // If high is full (e.g., "2.3.4"), use inclusive: "1.2.3 - 2.3.4" -> ">=1.2.3, <2.3.5"
@@ -94,18 +94,15 @@ fn parse_req_loose(s: &str) -> Result<VersionReq> {
                 build: semver::BuildMetadata::EMPTY,
             }
         };
-        
+
         let range_str = format!(">={}, <{}", low_ver, next_ver);
         return VersionReq::parse(&range_str)
             .with_context(|| format!("failed to parse hyphen range `{s}`"));
     }
 
     // npm often uses whitespace to separate AND constraints, while `semver` prefers commas.
-    let normalized = s
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
+    // Handle cases like ">= 2.1.2 < 3.0.0" where operators are separated from versions by spaces.
+    let normalized = normalize_whitespace_constraints(s);
     if normalized != s {
         if let Ok(r) = VersionReq::parse(&normalized) {
             return Ok(r);
@@ -127,6 +124,45 @@ fn normalize_partial_version(s: &str) -> String {
 fn is_partial_version(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     parts.len() < 3
+}
+
+fn normalize_whitespace_constraints(s: &str) -> String {
+    // Operators that can be separated from versions by whitespace
+    const OPERATORS: &[&str] = &[">=", "<=", ">", "<", "=", "~", "^"];
+
+    let mut result = String::new();
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        if i > 0 && !result.is_empty() {
+            result.push_str(", ");
+        }
+
+        let token = tokens[i];
+
+        // Check if this token is an operator
+        if OPERATORS.iter().any(|&op| token == op) {
+            // Operator found, combine with next token if it exists
+            result.push_str(token);
+            if i + 1 < tokens.len() {
+                // Check if next token is not an operator (it's a version)
+                let next_token = tokens[i + 1];
+                if !OPERATORS.iter().any(|&op| next_token == op) {
+                    result.push_str(next_token);
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+        } else {
+            // Not an operator, just add the token
+            result.push_str(token);
+            i += 1;
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -172,5 +208,16 @@ mod tests {
         assert!(!reqs[0].matches(&Version::parse("2.3.5").unwrap()));
         assert!(!reqs[0].matches(&Version::parse("1.2.2").unwrap()));
     }
-}
 
+    #[test]
+    fn whitespace_separated_operators() {
+        // ">= 2.1.2 < 3.0.0" should be normalized to ">=2.1.2, <3.0.0"
+        let reqs = parse_req_any(">= 2.1.2 < 3.0.0").unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert!(reqs[0].matches(&Version::parse("2.1.2").unwrap()));
+        assert!(reqs[0].matches(&Version::parse("2.5.0").unwrap()));
+        assert!(reqs[0].matches(&Version::parse("2.9.9").unwrap()));
+        assert!(!reqs[0].matches(&Version::parse("3.0.0").unwrap()));
+        assert!(!reqs[0].matches(&Version::parse("2.1.1").unwrap()));
+    }
+}
