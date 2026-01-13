@@ -3,7 +3,6 @@
 /node_modules
 /vx.lock
 /**/node_modules
-/npm/**/bin
 *.tgz
 /.tmp-npm-test
 /test/
