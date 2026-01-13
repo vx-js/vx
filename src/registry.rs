@@ -20,6 +20,7 @@ impl RegistryClient {
             .user_agent(format!("vx/{}", env!("CARGO_PKG_VERSION")))
             .pool_max_idle_per_host(256)
             .tcp_nodelay(true)
+            .http2_adaptive_window(true)
             .build()
             .context("build http client")?;
         Ok(Self { base, client })
@@ -104,6 +105,17 @@ impl RegistryClient {
                 .clone()
                 .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
             dependencies: meta.dependencies.clone().unwrap_or_default(),
+            optional_dependencies: meta.optional_dependencies.clone(),
+            os: meta
+                .os
+                .clone()
+                .map(|v| v.into_vec())
+                .unwrap_or_default(),
+            cpu: meta
+                .cpu
+                .clone()
+                .map(|v| v.into_vec())
+                .unwrap_or_default(),
         })
     }
 
@@ -127,6 +139,9 @@ pub struct ResolvedVersion {
     pub tarball: String,
     pub integrity: Option<String>,
     pub dependencies: BTreeMap<String, String>,
+    pub optional_dependencies: BTreeMap<String, String>,
+    pub os: Vec<String>,
+    pub cpu: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +157,28 @@ pub struct PackumentVersion {
     pub version: String,
     pub dist: Dist,
     pub dependencies: Option<BTreeMap<String, String>>,
+    #[serde(rename = "optionalDependencies", default)]
+    pub optional_dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    pub os: Option<StringOrVec>,
+    #[serde(default)]
+    pub cpu: Option<StringOrVec>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum StringOrVec {
+    String(String),
+    Vec(Vec<String>),
+}
+
+impl StringOrVec {
+    pub(crate) fn into_vec(self) -> Vec<String> {
+        match self {
+            StringOrVec::String(s) => vec![s],
+            StringOrVec::Vec(v) => v,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -23,14 +23,18 @@ pub struct LockNode {
     pub integrity: Option<String>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
+    #[serde(rename = "optionalDependencies", default)]
+    pub optional_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub requires: BTreeMap<String, String>,
 }
 
+pub const LOCKFILE_VERSION: u32 = 3;
+
 impl Lockfile {
     pub fn new(registry: String) -> Self {
         Self {
-            lockfile_version: 1,
+            lockfile_version: LOCKFILE_VERSION,
             registry,
             root: LockNode::default(),
             packages: BTreeMap::new(),
@@ -57,14 +61,25 @@ impl Lockfile {
     }
 
     pub fn validate_against_manifest(&self, manifest: &Manifest, include_dev: bool) -> Result<()> {
+        anyhow::ensure!(
+            self.lockfile_version >= LOCKFILE_VERSION,
+            "lockfile version {} is too old (expected {})",
+            self.lockfile_version,
+            LOCKFILE_VERSION
+        );
         let mut root_deps = manifest.dependencies.clone();
         if include_dev {
             root_deps.extend(manifest.dev_dependencies.clone());
         }
+        let root_optional = manifest.optional_dependencies.clone();
 
         anyhow::ensure!(
             self.root.dependencies == root_deps,
             "lockfile root dependencies do not match package.json"
+        );
+        anyhow::ensure!(
+            self.root.optional_dependencies == root_optional,
+            "lockfile root optional dependencies do not match package.json"
         );
 
         for (name, req) in &root_deps {
@@ -80,6 +95,17 @@ impl Lockfile {
                 child,
                 req
             );
+        }
+        for (name, req) in &root_optional {
+            if let Some(child) = self.root.requires.get(name) {
+                anyhow::ensure!(
+                    child_key_satisfies(req, child)?,
+                    "lockfile optional root resolution {} -> {} does not satisfy `{}`",
+                    name,
+                    child,
+                    req
+                );
+            }
         }
 
         let mut queue: VecDeque<String> = self.root.requires.values().cloned().collect();

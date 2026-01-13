@@ -6,3 +6,4 @@
 /npm/**/bin
 *.tgz
 /.tmp-npm-test
+/test/

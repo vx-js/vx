@@ -1,6 +1,8 @@
 use crate::cli::{CacheCommand, Cli, Command};
-use crate::fsutil::{ensure_dir, node_modules_package_dir, remove_dir_all_if_exists};
-use crate::lockfile::Lockfile;
+use crate::fsutil::{
+    current_link_mode_name, ensure_dir, node_modules_package_dir, remove_dir_all_if_exists,
+};
+use crate::lockfile::{Lockfile, LOCKFILE_VERSION};
 use crate::manifest::{Manifest, PackageSpec};
 use crate::paths::{ProjectPaths, vx_dir_for_path};
 use crate::registry::RegistryClient;
@@ -391,6 +393,13 @@ async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) ->
     let include_dev = !production;
     let layout = crate::store::current_layout_name().to_string();
     let node_modules = paths.node_modules.clone();
+    let next_cache_dir = if manifest.dependencies.contains_key("next")
+        || manifest.dev_dependencies.contains_key("next")
+    {
+        Some(paths.root.join(".next"))
+    } else {
+        None
+    };
 
     let existing_lock = load_lock_with_hash(&paths.lockfile)?;
     let mut lock_and_hash = None;
@@ -408,6 +417,8 @@ async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) ->
                 &layout,
                 &registry.base,
             )? {
+                let store = Store::new(paths.clone());
+                store.ensure_bins_from_lock(&lock)?;
                 eprintln!("Already up to date in {}", fmt_elapsed(started.elapsed()));
                 return Ok(ExitCode::SUCCESS);
             }
@@ -427,7 +438,8 @@ async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) ->
     } else {
         eprintln!("Resolving dependencies...");
         let resolve_started = Instant::now();
-        let existing = Lockfile::load_if_exists(&paths.lockfile)?;
+        let existing = Lockfile::load_if_exists(&paths.lockfile)?
+            .filter(|lock| lock.lockfile_version >= LOCKFILE_VERSION);
         let packument_cache_dir = paths.vx_dir.join("meta").join("packuments");
         let mut resolver = Resolver::new_with_cache(registry.clone(), Some(packument_cache_dir));
         let resolve_options = ResolveOptions {
@@ -453,6 +465,12 @@ async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) ->
             },
         )
         .await?;
+    if let Some(next_dir) = next_cache_dir {
+        if next_dir.exists() {
+            // Clear stale Next.js cache after dependency relinking.
+            remove_dir_all_if_exists(&next_dir)?;
+        }
+    }
 
     crate::state::save(
         &node_modules,
@@ -460,6 +478,7 @@ async fn cmd_install(production: bool, frozen_lockfile: bool, no_prune: bool) ->
             lock_sha256: lock.1.clone(),
             include_dev,
             layout,
+            link_mode: current_link_mode_name(),
             registry: registry.base.clone(),
             vx_version: env!("CARGO_PKG_VERSION").to_string(),
         },
@@ -690,6 +709,7 @@ fn run_bin(
         .to_ascii_lowercase();
     if ext == "js" || ext == "mjs" || ext == "cjs" {
         return ProcCommand::new("node")
+            .args(["--preserve-symlinks", "--preserve-symlinks-main"])
             .arg(bin_path)
             .args(args)
             .status()
@@ -773,6 +793,8 @@ fn is_up_to_date(
     if state.lock_sha256 != lock_hash
         || state.include_dev != include_dev
         || state.layout != layout
+        || state.link_mode.is_empty()
+        || state.link_mode != current_link_mode_name()
         || state.registry != registry
     {
         return Ok(false);

@@ -57,6 +57,8 @@ pub struct Manifest {
     pub dependencies: BTreeMap<String, String>,
     #[serde(rename = "devDependencies", default)]
     pub dev_dependencies: BTreeMap<String, String>,
+    #[serde(rename = "optionalDependencies", default)]
+    pub optional_dependencies: BTreeMap<String, String>,
 }
 
 impl Manifest {
@@ -82,9 +84,19 @@ impl Manifest {
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
+        let optional_dependencies = raw
+            .get("optionalDependencies")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         Ok(Self {
             dependencies,
             dev_dependencies,
+            optional_dependencies,
         })
     }
 

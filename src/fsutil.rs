@@ -3,6 +3,43 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkMode {
+    Auto,
+    Tree,
+    Symlink,
+    Junction,
+}
+
+pub fn current_link_mode_name() -> String {
+    match link_mode() {
+        LinkMode::Auto => "auto",
+        LinkMode::Tree => "tree",
+        LinkMode::Symlink => "symlink",
+        LinkMode::Junction => "junction",
+    }
+    .to_string()
+}
+
+fn link_mode() -> LinkMode {
+    let raw = std::env::var("VX_LINK_MODE").unwrap_or_default();
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => default_link_mode(),
+        "tree" | "copy" => LinkMode::Tree,
+        "symlink" => LinkMode::Symlink,
+        "junction" => LinkMode::Junction,
+        _ => default_link_mode(),
+    }
+}
+
+fn default_link_mode() -> LinkMode {
+    if cfg!(windows) {
+        LinkMode::Junction
+    } else {
+        LinkMode::Auto
+    }
+}
+
 pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;
@@ -49,34 +86,46 @@ pub fn link_tree(store_dir: &Path, dest_dir: &Path) -> Result<()> {
 }
 
 pub fn link_dir_fast(store_dir: &Path, dest_dir: &Path) -> Result<bool> {
-    if try_link_dir_platform(store_dir, dest_dir)? {
+    if try_link_dir_platform(store_dir, dest_dir, link_mode())? {
         return Ok(true);
     }
     Ok(false)
 }
 
 #[cfg(windows)]
-fn try_link_dir_platform(store_dir: &Path, dest_dir: &Path) -> Result<bool> {
-    // Prefer NTFS junctions (no admin required) for very fast installs.
-    if junction::create(store_dir, dest_dir).is_ok() {
-        return Ok(true);
-    }
-
-    // Fall back to symlink if available (requires Developer Mode or elevated privileges).
+fn try_link_dir_platform(store_dir: &Path, dest_dir: &Path, mode: LinkMode) -> Result<bool> {
     use std::os::windows::fs as winfs;
-    if winfs::symlink_dir(store_dir, dest_dir).is_ok() {
-        return Ok(true);
+    match mode {
+        LinkMode::Tree => Ok(false),
+        LinkMode::Symlink => Ok(winfs::symlink_dir(store_dir, dest_dir).is_ok()),
+        LinkMode::Junction => {
+            if junction::create(store_dir, dest_dir).is_ok() {
+                return Ok(true);
+            }
+            Ok(winfs::symlink_dir(store_dir, dest_dir).is_ok())
+        }
+        LinkMode::Auto => {
+            if winfs::symlink_dir(store_dir, dest_dir).is_ok() {
+                return Ok(true);
+            }
+            Ok(false)
+        }
     }
-    Ok(false)
 }
 
 #[cfg(not(windows))]
-fn try_link_dir_platform(store_dir: &Path, dest_dir: &Path) -> Result<bool> {
+fn try_link_dir_platform(store_dir: &Path, dest_dir: &Path, mode: LinkMode) -> Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs as unixfs;
-        if unixfs::symlink(store_dir, dest_dir).is_ok() {
-            return Ok(true);
+        match mode {
+            LinkMode::Tree => return Ok(false),
+            LinkMode::Junction => return Ok(false),
+            LinkMode::Symlink | LinkMode::Auto => {
+                if unixfs::symlink(store_dir, dest_dir).is_ok() {
+                    return Ok(true);
+                }
+            }
         }
     }
     Ok(false)

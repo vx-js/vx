@@ -9,6 +9,8 @@ pub struct InstallState {
     pub lock_sha256: String,
     pub include_dev: bool,
     pub layout: String,
+    #[serde(default)]
+    pub link_mode: String,
     pub registry: String,
     pub vx_version: String,
 }

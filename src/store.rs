@@ -9,6 +9,7 @@ use sha1::{Digest, Sha1};
 use sha2::Sha512;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -37,6 +38,13 @@ impl Store {
         Self {
             registry: RegistryClient::from_env().expect("registry client"),
             paths,
+        }
+    }
+
+    pub fn ensure_bins_from_lock(&self, lock: &Lockfile) -> Result<()> {
+        match detect_layout() {
+            Layout::Flat => self.ensure_bins_flat(lock),
+            Layout::Nested => self.ensure_bins_nested(lock),
         }
     }
 
@@ -155,10 +163,33 @@ impl Store {
                 ensure_dir(&dest)?;
                 link_tree(&store_dir, &dest)?;
             }
+            link_bins_for_package(node_modules, &dest)?;
             i += 1;
             if i == total || (i % 100 == 0) {
                 eprintln!("Linking packages: {i}/{total}");
             }
+        }
+        Ok(())
+    }
+
+    fn ensure_bins_flat(&self, lock: &Lockfile) -> Result<()> {
+        let chosen = choose_flat_set(lock);
+        let node_modules = &self.paths.node_modules;
+        if !node_modules.exists() {
+            return Ok(());
+        }
+        for (name, _key) in chosen {
+            let dest = node_modules_package_dir(node_modules, &name)?;
+            if dest.join("package.json").exists() {
+                link_bins_for_package(node_modules, &dest)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_bins_nested(&self, lock: &Lockfile) -> Result<()> {
+        for (name, child_key) in &lock.root.requires {
+            self.ensure_bins_tree(lock, &self.paths.root, name, child_key)?;
         }
         Ok(())
     }
@@ -184,9 +215,32 @@ impl Store {
         remove_dir_all_if_exists(&dest)?;
         ensure_dir(&dest)?;
         link_tree(&store_dir, &dest)?;
+        link_bins_for_package(&node_modules, &dest)?;
 
         for (dep_name, child_key) in &node.requires {
             self.install_tree(lock, &dest, dep_name, child_key)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_bins_tree(
+        &self,
+        lock: &Lockfile,
+        parent_dir: &Path,
+        name: &str,
+        key: &str,
+    ) -> Result<()> {
+        let node = lock
+            .packages
+            .get(key)
+            .ok_or_else(|| anyhow!("missing lock node {key}"))?;
+        let node_modules = parent_dir.join("node_modules");
+        let dest = node_modules_package_dir(&node_modules, name)?;
+        if dest.join("package.json").exists() {
+            link_bins_for_package(&node_modules, &dest)?;
+        }
+        for (dep_name, child_key) in &node.requires {
+            self.ensure_bins_tree(lock, &dest, dep_name, child_key)?;
         }
         Ok(())
     }
@@ -457,5 +511,151 @@ fn normalize_store_dir_if_needed(store_dir: &Path) -> Result<()> {
         }
     }
     fs::remove_dir_all(&inner)?;
+    Ok(())
+}
+
+fn link_bins_for_package(parent_node_modules: &Path, pkg_dir: &Path) -> Result<()> {
+    let bins = read_package_bins(pkg_dir)?;
+    if bins.is_empty() {
+        return Ok(());
+    }
+    let bin_dir = parent_node_modules.join(".bin");
+    ensure_dir(&bin_dir)?;
+    for (name, rel_path) in bins {
+        let target = pkg_dir.join(rel_path);
+        if !target.is_file() {
+            continue;
+        }
+        create_bin_shim(&bin_dir, &name, &target)?;
+    }
+    Ok(())
+}
+
+fn read_package_bins(pkg_dir: &Path) -> Result<Vec<(String, String)>> {
+    let pkg_json = pkg_dir.join("package.json");
+    if !pkg_json.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(&pkg_json).with_context(|| format!("read {}", pkg_json.display()))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", pkg_json.display()))?;
+    let bin_val = match v.get("bin") {
+        Some(val) => val,
+        None => return Ok(Vec::new()),
+    };
+    let pkg_name = v
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| pkg_dir.file_name().and_then(|s| s.to_str()))
+        .unwrap_or("")
+        .to_string();
+
+    let mut bins = Vec::new();
+    match bin_val {
+        serde_json::Value::String(s) => {
+            if !pkg_name.is_empty() && !s.trim().is_empty() {
+                bins.push((default_bin_name(&pkg_name), s.to_string()));
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    if !k.trim().is_empty() && !s.trim().is_empty() {
+                        bins.push((k.clone(), s.to_string()));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(bins)
+}
+
+fn default_bin_name(pkg_name: &str) -> String {
+    pkg_name.rsplit('/').next().unwrap_or(pkg_name).to_string()
+}
+
+#[cfg(windows)]
+fn create_bin_shim(bin_dir: &Path, name: &str, target: &Path) -> Result<()> {
+    let shim_path = bin_dir.join(format!("{name}.cmd"));
+    let target_str = target.to_string_lossy();
+    let use_node = should_use_node(target)?;
+    let body = if use_node {
+        format!(
+            "@ECHO OFF\r\nnode --preserve-symlinks --preserve-symlinks-main \"{}\" %*\r\n",
+            target_str
+        )
+    } else {
+        format!("@ECHO OFF\r\n\"{}\" %*\r\n", target_str)
+    };
+    fs::write(&shim_path, body).with_context(|| format!("write {}", shim_path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn create_bin_shim(bin_dir: &Path, name: &str, target: &Path) -> Result<()> {
+    let shim_path = bin_dir.join(name);
+    let target_str = target.to_string_lossy();
+    let use_node = should_use_node(target)?;
+    let body = if use_node {
+        format!(
+            "#!/usr/bin/env sh\nexec node --preserve-symlinks --preserve-symlinks-main \"{}\" \"$@\"\n",
+            target_str
+        )
+    } else {
+        format!("#!/usr/bin/env sh\nexec \"{}\" \"$@\"\n", target_str)
+    };
+    fs::write(&shim_path, body).with_context(|| format!("write {}", shim_path.display()))?;
+    set_exec(&shim_path)?;
+    if !use_node {
+        set_exec(target)?;
+    }
+    Ok(())
+}
+
+fn should_use_node(target: &Path) -> Result<bool> {
+    let ext = target
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "js" | "mjs" | "cjs") {
+        return Ok(true);
+    }
+    if let Some(shebang) = read_shebang(target)? {
+        let lower = shebang.to_ascii_lowercase();
+        if lower.contains("node") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn read_shebang(path: &Path) -> Result<Option<String>> {
+    let f = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut reader = std::io::BufReader::new(f);
+    let mut buf = Vec::new();
+    let _ = reader.read_until(b'\n', &mut buf)?;
+    if buf.len() < 2 || &buf[..2] != b"#!" {
+        return Ok(None);
+    }
+    let line = String::from_utf8_lossy(&buf[2..]);
+    Ok(Some(line.trim().to_string()))
+}
+
+#[cfg(unix)]
+fn set_exec(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)
+        .with_context(|| format!("metadata {}", path.display()))?
+        .permissions();
+    let mode = perms.mode();
+    perms.set_mode(mode | 0o111);
+    fs::set_permissions(path, perms).with_context(|| format!("chmod {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_exec(_path: &Path) -> Result<()> {
     Ok(())
 }
