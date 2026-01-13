@@ -42,13 +42,80 @@ fn default_link_mode() -> LinkMode {
 
 pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
-        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;
+        let result = fs::remove_dir_all(path);
+        if let Err(e) = result {
+            // Check for path length errors (OS error 36 on Linux, 206 on Windows)
+            let is_path_too_long = e
+                .raw_os_error()
+                .map(|code| code == 36 || code == 206)
+                .unwrap_or(false)
+                || e.to_string().contains("File name too long")
+                || e.to_string().contains("path too long")
+                || e.to_string().contains("filename too long");
+            
+            if is_path_too_long {
+                // If we can't remove due to path length, that's okay - we'll try to overwrite
+                // But check the path length before proceeding
+                check_path_length(path)?;
+            } else {
+                return Err(e).with_context(|| format!("remove {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_path_length(path: &Path) -> Result<()> {
+    // Check path length limits
+    // Linux: typically 4096 bytes, Windows: 260 chars by default (can be extended)
+    // Use the path as bytes for accurate checking on Linux
+    let path_bytes = path.as_os_str().len();
+    let max_length = if cfg!(windows) { 
+        // Windows: 260 characters (MAX_PATH)
+        260 
+    } else { 
+        // Linux: 4096 bytes (PATH_MAX)
+        4096 
+    };
+    
+    if path_bytes > max_length {
+        return Err(anyhow!(
+            "Path too long ({} bytes, max {}): {}\n\
+            This usually happens with deeply nested dependencies in nested layout.\n\
+            Solution: Use flat layout by setting VX_LAYOUT=flat environment variable,\n\
+            or use symlinks by setting VX_LINK_MODE=symlink",
+            path_bytes,
+            max_length,
+            path.display()
+        ));
     }
     Ok(())
 }
 
 pub fn ensure_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("create dir {}", path.display()))?;
+    check_path_length(path)?;
+    let result = fs::create_dir_all(path);
+    if let Err(e) = result {
+        // Check for path length errors (OS error 36 on Linux, 206 on Windows)
+        let is_path_too_long = e
+            .raw_os_error()
+            .map(|code| code == 36 || code == 206)
+            .unwrap_or(false)
+            || e.to_string().contains("File name too long")
+            || e.to_string().contains("path too long")
+            || e.to_string().contains("filename too long");
+        
+        if is_path_too_long {
+            return Err(anyhow!(
+                "Path too long: {}\n\
+                This usually happens with deeply nested dependencies in nested layout.\n\
+                Solution: Use flat layout by setting VX_LAYOUT=flat environment variable,\n\
+                or use symlinks by setting VX_LINK_MODE=symlink",
+                path.display()
+            ).context(format!("create dir {}", path.display())));
+        }
+        return Err(e).with_context(|| format!("create dir {}", path.display()));
+    }
     Ok(())
 }
 

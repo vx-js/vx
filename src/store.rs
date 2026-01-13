@@ -212,6 +212,7 @@ impl Store {
         let node_modules = parent_dir.join("node_modules");
         ensure_dir(&node_modules)?;
         let dest = node_modules_package_dir(&node_modules, name)?;
+        // Check path length early - ensure_dir will validate and provide helpful error
         remove_dir_all_if_exists(&dest)?;
         if !link_dir_fast(&store_dir, &dest)? {
             ensure_dir(&dest)?;
