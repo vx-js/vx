@@ -213,8 +213,10 @@ impl Store {
         ensure_dir(&node_modules)?;
         let dest = node_modules_package_dir(&node_modules, name)?;
         remove_dir_all_if_exists(&dest)?;
-        ensure_dir(&dest)?;
-        link_tree(&store_dir, &dest)?;
+        if !link_dir_fast(&store_dir, &dest)? {
+            ensure_dir(&dest)?;
+            link_tree(&store_dir, &dest)?;
+        }
         link_bins_for_package(&node_modules, &dest)?;
 
         for (dep_name, child_key) in &node.requires {

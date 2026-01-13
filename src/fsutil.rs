@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -74,9 +74,29 @@ pub fn link_tree(store_dir: &Path, dest_dir: &Path) -> Result<()> {
                 fs::remove_file(&dst).with_context(|| format!("remove file {}", dst.display()))?;
             }
             if fs::hard_link(src, &dst).is_err() {
-                fs::copy(src, &dst).with_context(|| {
-                    format!("copy {} -> {}", src.display(), dst.display())
-                })?;
+                let copy_result = fs::copy(src, &dst);
+                if let Err(e) = copy_result {
+                    // Check for path length errors (OS error 36 on Linux, 206 on Windows)
+                    let is_path_too_long = e
+                        .raw_os_error()
+                        .map(|code| code == 36 || code == 206)
+                        .unwrap_or(false)
+                        || e.to_string().contains("File name too long")
+                        || e.to_string().contains("path too long")
+                        || e.to_string().contains("filename too long");
+                    
+                    if is_path_too_long {
+                        return Err(anyhow!(
+                            "Path too long: {}\n\
+                            This usually happens with deeply nested dependencies.\n\
+                            Try using flat layout by setting VX_LAYOUT=flat, or use symlinks by setting VX_LINK_MODE=symlink",
+                            dst.display()
+                        ).context(format!("copy {} -> {}", src.display(), dst.display())));
+                    }
+                    return Err(e).with_context(|| {
+                        format!("copy {} -> {}", src.display(), dst.display())
+                    });
+                }
             }
             continue;
         }

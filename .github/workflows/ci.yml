@@ -114,8 +114,7 @@ jobs:
 
       - name: Compute canary version
         id: compute
-        run: |
-          node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync("npm/vx/package.json","utf8")); const base=pkg.version; const ts=new Date().toISOString().replace(/\D/g,"").slice(0,14); const runId=(process.env.GITHUB_RUN_ID||"").trim(); const suffix=runId ? (ts+"-"+runId) : ts; const v=base+"-canary-"+suffix; console.log(v); fs.appendFileSync(process.env.GITHUB_OUTPUT, "version="+v+"\n");'
+        run: node scripts/ci/compute-canary-version.js
 
   publish-npm-platform:
     name: Publish npm platform packages (${{ matrix.name }})
@@ -266,8 +265,7 @@ jobs:
         working-directory: ${{ matrix.pkgdir }}
         env:
           CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
-        run: |
-          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=String(process.env.CANARY_VERSION||'').trim(); fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\n');"
+        run: node ../../scripts/ci/set-canary-version.js
 
       - name: Publish (canary)
         working-directory: ${{ matrix.pkgdir }}
@@ -299,8 +297,7 @@ jobs:
         working-directory: npm/vx
         env:
           CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
-        run: |
-          node -e "const fs=require('fs'); const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); const v=String(process.env.CANARY_VERSION||'').trim(); j.version=v; j.optionalDependencies=j.optionalDependencies||{}; for (const k of Object.keys(j.optionalDependencies)) j.optionalDependencies[k]=v; fs.writeFileSync(p, JSON.stringify(j, null, '\t')+'\n');"
+        run: node ../../scripts/ci/set-canary-version-with-deps.js
 
       - name: Publish @vx-js/vx (canary)
         working-directory: npm/vx
