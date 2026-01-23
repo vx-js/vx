@@ -16,6 +16,8 @@ jobs:
       version: ${{ steps.compute.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -59,6 +61,8 @@ jobs:
             rustTarget: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -98,6 +102,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -147,6 +153,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -195,6 +203,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -205,7 +215,7 @@ jobs:
       - name: Set canary version (and optionalDependencies)
         working-directory: npm/vx
         env:
-          CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
+          CANAfRY_VERSION: ${{ needs.canary-version.outputs.version }}
         run: node ../../scripts/ci/set-canary-version-with-deps.js
 
       - name: Publish @vx-js/vx (canary)

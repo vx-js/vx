@@ -41,6 +41,15 @@ fn default_link_mode() -> LinkMode {
 }
 
 pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
+    // Check for symlink first (symlink_metadata doesn't follow symlinks)
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            // Remove symlink (use remove_file for symlinks on Unix)
+            fs::remove_file(path).with_context(|| format!("remove symlink {}", path.display()))?;
+            return Ok(());
+        }
+    }
+
     if path.exists() {
         let result = fs::remove_dir_all(path);
         if let Err(e) = result {
@@ -213,11 +222,28 @@ fn try_link_dir_platform(store_dir: &Path, dest_dir: &Path, mode: LinkMode) -> R
             LinkMode::Tree => return Ok(false),
             LinkMode::Junction => return Ok(false),
             LinkMode::Symlink | LinkMode::Auto => {
-                if unixfs::symlink(store_dir, dest_dir).is_ok() {
-                    return Ok(true);
+                // Remove existing file/symlink if present
+                if dest_dir.exists() || dest_dir.is_symlink() {
+                    let _ = fs::remove_file(dest_dir);
+                    let _ = fs::remove_dir_all(dest_dir);
+                }
+                // Verify store_dir exists and is a directory
+                if !store_dir.is_dir() {
+                    return Ok(false);
+                }
+                match unixfs::symlink(store_dir, dest_dir) {
+                    Ok(()) => return Ok(true),
+                    Err(_e) => {
+                        // Symlink failed, fall back to copy
+                        return Ok(false);
+                    }
                 }
             }
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store_dir, dest_dir, mode);
     }
     Ok(false)
 }

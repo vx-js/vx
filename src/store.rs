@@ -502,6 +502,10 @@ fn normalize_store_dir_if_needed(store_dir: &Path) -> Result<()> {
     if !store_dir.exists() {
         return Ok(());
     }
+    // Ensure store_dir is actually a directory
+    if !store_dir.is_dir() {
+        return Ok(());
+    }
 
     let mut entries = fs::read_dir(store_dir)
         .with_context(|| format!("read dir {}", store_dir.display()))?
