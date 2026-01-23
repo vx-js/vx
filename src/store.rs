@@ -129,9 +129,20 @@ impl Store {
     }
 
     fn install_nested(&self, lock: &Lockfile) -> Result<()> {
+        let total = lock.packages.len() as u64;
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        pb.set_message("Linking packages...");
+
         for (name, child_key) in &lock.root.requires {
-            self.install_tree(lock, &self.paths.root, name, child_key)?;
+            self.install_tree(lock, &self.paths.root, name, child_key, &pb)?;
         }
+        pb.finish_with_message("Linked");
         Ok(())
     }
 
@@ -202,6 +213,7 @@ impl Store {
         parent_dir: &Path,
         name: &str,
         key: &str,
+        pb: &ProgressBar,
     ) -> Result<()> {
         let node = lock
             .packages
@@ -230,9 +242,10 @@ impl Store {
             link_tree(&store_dir, &dest)?;
         }
         link_bins_for_package(&node_modules, &dest)?;
+        pb.inc(1);
 
         for (dep_name, child_key) in &node.requires {
-            self.install_tree(lock, &dest, dep_name, child_key)?;
+            self.install_tree(lock, &dest, dep_name, child_key, pb)?;
         }
         Ok(())
     }
@@ -289,13 +302,7 @@ fn detect_layout() -> Layout {
     match v.as_str() {
         "nested" => Layout::Nested,
         "flat" => Layout::Flat,
-        _ => {
-            if cfg!(windows) {
-                Layout::Flat
-            } else {
-                Layout::Nested
-            }
-        }
+        _ => Layout::Flat, // Default to flat for better compatibility (Next.js, etc.)
     }
 }
 
