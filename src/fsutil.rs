@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -173,6 +173,10 @@ pub fn link_tree(store_dir: &Path, dest_dir: &Path) -> Result<()> {
 }
 
 pub fn link_dir_fast(store_dir: &Path, dest_dir: &Path) -> Result<bool> {
+    // Ensure parent directory exists (important for scoped packages like @scope/pkg)
+    if let Some(parent) = dest_dir.parent() {
+        ensure_dir(parent)?;
+    }
     if try_link_dir_platform(store_dir, dest_dir, link_mode())? {
         return Ok(true);
     }
