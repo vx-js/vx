@@ -36,7 +36,9 @@ fn default_link_mode() -> LinkMode {
     if cfg!(windows) {
         LinkMode::Junction
     } else {
-        LinkMode::Auto
+        // Use Tree (hardlink/copy) by default for better compatibility
+        // with tools like Next.js/Turbopack that don't handle symlinks well
+        LinkMode::Tree
     }
 }
 
