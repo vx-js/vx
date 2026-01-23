@@ -1,10 +1,10 @@
+use crate::npm_semver;
 use anyhow::{Context, Result, anyhow};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use crate::npm_semver;
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -19,8 +19,12 @@ impl RegistryClient {
         let client = Client::builder()
             .user_agent(format!("vx/{}", env!("CARGO_PKG_VERSION")))
             .pool_max_idle_per_host(256)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .tcp_nodelay(true)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
             .http2_adaptive_window(true)
+            .http2_initial_stream_window_size(2 * 1024 * 1024) // 2MB
+            .http2_initial_connection_window_size(4 * 1024 * 1024) // 4MB
             .build()
             .context("build http client")?;
         Ok(Self { base, client })
@@ -106,16 +110,8 @@ impl RegistryClient {
                 .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
             dependencies: meta.dependencies.clone().unwrap_or_default(),
             optional_dependencies: meta.optional_dependencies.clone(),
-            os: meta
-                .os
-                .clone()
-                .map(|v| v.into_vec())
-                .unwrap_or_default(),
-            cpu: meta
-                .cpu
-                .clone()
-                .map(|v| v.into_vec())
-                .unwrap_or_default(),
+            os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
+            cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
         })
     }
 

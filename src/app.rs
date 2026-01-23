@@ -2,7 +2,7 @@ use crate::cli::{CacheCommand, Cli, Command};
 use crate::fsutil::{
     current_link_mode_name, ensure_dir, node_modules_package_dir, remove_dir_all_if_exists,
 };
-use crate::lockfile::{Lockfile, LOCKFILE_VERSION};
+use crate::lockfile::{LOCKFILE_VERSION, Lockfile};
 use crate::manifest::{Manifest, PackageSpec};
 use crate::paths::{ProjectPaths, vx_dir_for_path};
 use crate::registry::RegistryClient;

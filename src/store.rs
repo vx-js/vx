@@ -1,21 +1,22 @@
-use crate::fsutil::{ensure_dir, link_dir_fast, link_tree, node_modules_package_dir, remove_dir_all_if_exists};
+use crate::fsutil::{
+    ensure_dir, link_dir_fast, link_tree, node_modules_package_dir, remove_dir_all_if_exists,
+};
 use crate::integrity::{Algo, Integrity, hex};
 use crate::lockfile::Lockfile;
 use crate::paths::ProjectPaths;
 use crate::registry::RegistryClient;
 use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
 use sha2::Sha512;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tar::Archive;
-use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 
 pub struct Store {
@@ -72,8 +73,10 @@ impl Store {
         let mut tasks = futures::stream::FuturesUnordered::new();
 
         let mut missing = Vec::new();
-        for (_key, node) in &lock.packages {
-            let Some(tarball) = node.tarball.clone() else { continue };
+        for node in lock.packages.values() {
+            let Some(tarball) = node.tarball.clone() else {
+                continue;
+            };
             let integrity = node.integrity.clone();
             let store_path = self.store_path(integrity.as_deref(), &tarball)?;
             if !store_path.exists() {
@@ -85,41 +88,35 @@ impl Store {
             return Ok(());
         }
 
-        let total = missing.len();
-        eprintln!("Fetching packages: 0/{total}");
-        let done = Arc::new(AtomicUsize::new(0));
-        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
-        let done_for_task = done.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(500));
-            let mut last = 0usize;
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let cur = done_for_task.load(Ordering::Relaxed);
-                        if cur != last {
-                            eprintln!("Fetching packages: {cur}/{total}");
-                            last = cur;
-                        }
-                    }
-                    _ = &mut stop_rx => {
-                        let cur = done_for_task.load(Ordering::Relaxed);
-                        eprintln!("Fetching packages: {cur}/{total}");
-                        break;
-                    }
-                }
-            }
-        });
+        let total = missing.len() as u64;
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        pb.set_message("Fetching packages...");
+        pb.enable_steady_tick(Duration::from_millis(100));
+
+        let pb = Arc::new(pb);
 
         for (store_path, tarball, integrity) in missing {
             let permit = sem.clone().acquire_owned().await.unwrap();
             let registry = self.registry.clone();
             let tmp_dir = self.paths.tmp_dir.clone();
-            let done = done.clone();
+            let pb = pb.clone();
             tasks.push(tokio::spawn(async move {
                 let _permit = permit;
-                let res = ensure_in_store(&registry, &tmp_dir, &store_path, &tarball, integrity.as_deref()).await;
-                done.fetch_add(1, Ordering::Relaxed);
+                let res = ensure_in_store(
+                    &registry,
+                    &tmp_dir,
+                    &store_path,
+                    &tarball,
+                    integrity.as_deref(),
+                )
+                .await;
+                pb.inc(1);
                 res
             }));
         }
@@ -127,7 +124,7 @@ impl Store {
         while let Some(res) = tasks.next().await {
             res.context("store task panicked")??;
         }
-        let _ = stop_tx.send(());
+        pb.finish_with_message("Fetched");
         Ok(())
     }
 
@@ -143,9 +140,16 @@ impl Store {
         let node_modules = &self.paths.node_modules;
         ensure_dir(node_modules)?;
 
-        let total = chosen.len();
-        eprintln!("Linking packages: 0/{total}");
-        let mut i = 0usize;
+        let total = chosen.len() as u64;
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        pb.set_message("Linking packages...");
+
         for (name, key) in chosen {
             let node = lock
                 .packages
@@ -164,11 +168,9 @@ impl Store {
                 link_tree(&store_dir, &dest)?;
             }
             link_bins_for_package(node_modules, &dest)?;
-            i += 1;
-            if i == total || (i % 100 == 0) {
-                eprintln!("Linking packages: {i}/{total}");
-            }
+            pb.inc(1);
         }
+        pb.finish_with_message("Linked");
         Ok(())
     }
 
@@ -194,7 +196,13 @@ impl Store {
         Ok(())
     }
 
-    fn install_tree(&self, lock: &Lockfile, parent_dir: &Path, name: &str, key: &str) -> Result<()> {
+    fn install_tree(
+        &self,
+        lock: &Lockfile,
+        parent_dir: &Path,
+        name: &str,
+        key: &str,
+    ) -> Result<()> {
         let node = lock
             .packages
             .get(key)
@@ -206,7 +214,10 @@ impl Store {
         let store_dir = self.store_path(node.integrity.as_deref(), tarball)?;
         normalize_store_dir_if_needed(&store_dir)?;
         if !store_dir.exists() {
-            return Err(anyhow!("store entry missing for {key}: {}", store_dir.display()));
+            return Err(anyhow!(
+                "store entry missing for {key}: {}",
+                store_dir.display()
+            ));
         }
 
         let node_modules = parent_dir.join("node_modules");
@@ -295,7 +306,9 @@ fn choose_flat_set(lock: &Lockfile) -> BTreeMap<String, String> {
     }
     // Best-effort: fill additional packages without clobbering.
     for (key, node) in &lock.packages {
-        let Some(name) = node.name.clone() else { continue };
+        let Some(name) = node.name.clone() else {
+            continue;
+        };
         chosen.entry(name).or_insert_with(|| key.clone());
     }
     chosen
@@ -308,7 +321,9 @@ fn suggested_concurrency() -> usize {
     if let Some(v) = env {
         return v.max(1);
     }
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8);
     (cpus * 8).clamp(8, 64)
 }
 
@@ -331,7 +346,8 @@ async fn ensure_in_store(
         .context("create temp dir")?;
     let tgz_path = tmp.path().join("pkg.tgz");
 
-    let (bytes_hash, algo) = download_with_hash(registry, tarball_url, &tgz_path, integrity).await?;
+    let (bytes_hash, algo) =
+        download_with_hash(registry, tarball_url, &tgz_path, integrity).await?;
 
     if let Some(integrity) = integrity {
         let parsed = Integrity::parse(integrity)?;
@@ -369,8 +385,10 @@ async fn ensure_in_store(
 }
 
 fn matches_algo(expected: Algo, actual: Algo) -> bool {
-    matches!((expected, actual), (Algo::Sha1Hex, Algo::Sha1) | (Algo::Sha1Hex, Algo::Sha1Hex))
-        || expected == actual
+    matches!(
+        (expected, actual),
+        (Algo::Sha1Hex, Algo::Sha1) | (Algo::Sha1Hex, Algo::Sha1Hex)
+    ) || expected == actual
 }
 
 async fn download_with_hash(
@@ -408,7 +426,13 @@ async fn download_with_hash(
         Algo::Sha512 => sha512.finalize().to_vec(),
         Algo::Sha1 | Algo::Sha1Hex => sha1.finalize().to_vec(),
     };
-    Ok((bytes, match algo { Algo::Sha1Hex => Algo::Sha1, a => a }))
+    Ok((
+        bytes,
+        match algo {
+            Algo::Sha1Hex => Algo::Sha1,
+            a => a,
+        },
+    ))
 }
 
 fn extract_tgz(tgz_path: &Path, dest: &Path) -> Result<()> {

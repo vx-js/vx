@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
 use crate::manifest::Manifest;
 use crate::npm_semver;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -50,7 +50,8 @@ impl Lockfile {
             return Ok(None);
         }
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let lock: Self = serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        let lock: Self =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
         Ok(Some(lock))
     }
 
@@ -83,11 +84,10 @@ impl Lockfile {
         );
 
         for (name, req) in &root_deps {
-            let child = self
-                .root
-                .requires
-                .get(name)
-                .ok_or_else(|| anyhow::anyhow!("lockfile missing root resolution for {}", name))?;
+            let child =
+                self.root.requires.get(name).ok_or_else(|| {
+                    anyhow::anyhow!("lockfile missing root resolution for {}", name)
+                })?;
             anyhow::ensure!(
                 child_key_satisfies(req, child)?,
                 "lockfile root resolution {} -> {} does not satisfy `{}`",
@@ -126,10 +126,13 @@ impl Lockfile {
             );
 
             for (dep_name, dep_req) in &node.dependencies {
-                let child = node
-                    .requires
-                    .get(dep_name)
-                    .ok_or_else(|| anyhow::anyhow!("lockfile missing resolution for {} dependency {}", key, dep_name))?;
+                let child = node.requires.get(dep_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "lockfile missing resolution for {} dependency {}",
+                        key,
+                        dep_name
+                    )
+                })?;
                 anyhow::ensure!(
                     child_key_satisfies(dep_req, child)?,
                     "lockfile resolution {} -> {} does not satisfy `{}`",

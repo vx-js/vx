@@ -1,9 +1,10 @@
-use crate::lockfile::{LockNode, Lockfile, LOCKFILE_VERSION};
+use crate::lockfile::{LOCKFILE_VERSION, LockNode, Lockfile};
 use crate::manifest::Manifest;
 use crate::npm_semver;
 use crate::registry::{Packument, RegistryClient, ResolvedVersion};
 use anyhow::{Context, Result, anyhow};
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -54,7 +55,8 @@ impl Resolver {
         let root_optional = manifest.optional_dependencies.clone();
 
         if options.frozen_lockfile {
-            let lock = existing.ok_or_else(|| anyhow!("--frozen-lockfile requires an existing vx.lock"))?;
+            let lock = existing
+                .ok_or_else(|| anyhow!("--frozen-lockfile requires an existing vx.lock"))?;
             if lock.registry != self.registry.base {
                 return Err(anyhow!(
                     "lockfile registry `{}` does not match current registry `{}`",
@@ -75,7 +77,8 @@ impl Resolver {
         lock.root.dependencies = root_deps.clone();
         lock.root.optional_dependencies = root_optional.clone();
         lock.root.requires.retain(|k, _| {
-            lock.root.dependencies.contains_key(k) || lock.root.optional_dependencies.contains_key(k)
+            lock.root.dependencies.contains_key(k)
+                || lock.root.optional_dependencies.contains_key(k)
         });
 
         let mut queue: VecDeque<(String, BTreeMap<String, String>, BTreeMap<String, String>)> =
@@ -93,7 +96,9 @@ impl Resolver {
         while !queue.is_empty() {
             let mut batch = Vec::new();
             while batch.len() < batch_size {
-                let Some((parent_key, deps, optional_deps)) = queue.pop_front() else { break };
+                let Some((parent_key, deps, optional_deps)) = queue.pop_front() else {
+                    break;
+                };
                 if parent_key != "__root__" && !visited_nodes.insert(parent_key.clone()) {
                     continue;
                 }
@@ -124,9 +129,9 @@ impl Resolver {
             for (parent_key, deps, optional_deps) in batch {
                 if parent_key != "__root__" {
                     if let Some(parent) = lock.packages.get_mut(&parent_key) {
-                        parent.requires.retain(|k, _| {
-                            deps.contains_key(k) || optional_deps.contains_key(k)
-                        });
+                        parent
+                            .requires
+                            .retain(|k, _| deps.contains_key(k) || optional_deps.contains_key(k));
                     }
                 }
                 for (dep_name, dep_req) in deps {
@@ -183,7 +188,12 @@ impl Resolver {
         Ok(lock)
     }
 
-    async fn resolve_and_upsert(&mut self, lock: &mut Lockfile, name: &str, req: &str) -> Result<String> {
+    async fn resolve_and_upsert(
+        &mut self,
+        lock: &mut Lockfile,
+        name: &str,
+        req: &str,
+    ) -> Result<String> {
         let resolved = self.resolve_version_cached(name, req).await?;
         Ok(upsert_resolved(lock, &resolved))
     }
@@ -238,29 +248,18 @@ impl Resolver {
                     .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
                 dependencies: meta.dependencies.clone().unwrap_or_default(),
                 optional_dependencies: meta.optional_dependencies.clone(),
-                os: meta
-                    .os
-                    .clone()
-                    .map(|v| v.into_vec())
-                    .unwrap_or_default(),
-                cpu: meta
-                    .cpu
-                    .clone()
-                    .map(|v| v.into_vec())
-                    .unwrap_or_default(),
+                os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
+                cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
             }
         } else {
             let reqs = crate::npm_semver::parse_req_any(req)
                 .with_context(|| format!("invalid semver range `{req}` for {name}"))?;
-            let cached_version = self
-                .packument_versions
-                .get(name)
-                .and_then(|versions| {
-                    versions
-                        .iter()
-                        .find(|(ver, _)| reqs.iter().any(|r| r.matches(ver)))
-                        .map(|(_, ver_str)| ver_str.clone())
-                });
+            let cached_version = self.packument_versions.get(name).and_then(|versions| {
+                versions
+                    .iter()
+                    .find(|(ver, _)| reqs.iter().any(|r| r.matches(ver)))
+                    .map(|(_, ver_str)| ver_str.clone())
+            });
 
             if let Some(version) = cached_version {
                 let p = self.packument_cached(name).await?;
@@ -279,59 +278,43 @@ impl Resolver {
                         .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
                     dependencies: meta.dependencies.clone().unwrap_or_default(),
                     optional_dependencies: meta.optional_dependencies.clone(),
-                    os: meta
-                        .os
-                        .clone()
-                        .map(|v| v.into_vec())
-                        .unwrap_or_default(),
-                    cpu: meta
-                        .cpu
-                        .clone()
-                        .map(|v| v.into_vec())
-                        .unwrap_or_default(),
+                    os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
+                    cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
                 }
             } else {
-                let (resolved, versions_cache) = {
-                    let p = self.packument_cached(name).await?;
-                    let mut versions = Vec::new();
-                    for v in p.versions.keys() {
-                        let Ok(ver) = semver::Version::parse(v) else { continue };
-                        versions.push((ver, v.to_string()));
-                    }
-                    versions.sort_by(|a, b| b.0.cmp(&a.0));
-                    let version = versions
-                        .iter()
-                        .find(|(ver, _)| reqs.iter().any(|r| r.matches(ver)))
-                        .map(|(_, ver_str)| ver_str.clone())
-                        .ok_or_else(|| anyhow!("no version for {name} matches `{req}`"))?;
-                    let meta = p
-                        .versions
-                        .get(&version)
-                        .ok_or_else(|| anyhow!("missing version metadata for {name}@{version}"))?;
-                    let resolved = ResolvedVersion {
-                        name: meta.name.clone(),
-                        version: meta.version.clone(),
-                        tarball: meta.dist.tarball.clone(),
-                        integrity: meta
-                            .dist
-                            .integrity
-                            .clone()
-                            .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
-                        dependencies: meta.dependencies.clone().unwrap_or_default(),
-                        optional_dependencies: meta.optional_dependencies.clone(),
-                        os: meta
-                            .os
-                            .clone()
-                            .map(|v| v.into_vec())
-                            .unwrap_or_default(),
-                        cpu: meta
-                            .cpu
-                            .clone()
-                            .map(|v| v.into_vec())
-                            .unwrap_or_default(),
+                let (resolved, versions_cache) =
+                    {
+                        let p = self.packument_cached(name).await?;
+                        let mut versions = Vec::new();
+                        for v in p.versions.keys() {
+                            let Ok(ver) = semver::Version::parse(v) else {
+                                continue;
+                            };
+                            versions.push((ver, v.to_string()));
+                        }
+                        versions.sort_by(|a, b| b.0.cmp(&a.0));
+                        let version = versions
+                            .iter()
+                            .find(|(ver, _)| reqs.iter().any(|r| r.matches(ver)))
+                            .map(|(_, ver_str)| ver_str.clone())
+                            .ok_or_else(|| anyhow!("no version for {name} matches `{req}`"))?;
+                        let meta = p.versions.get(&version).ok_or_else(|| {
+                            anyhow!("missing version metadata for {name}@{version}")
+                        })?;
+                        let resolved = ResolvedVersion {
+                            name: meta.name.clone(),
+                            version: meta.version.clone(),
+                            tarball: meta.dist.tarball.clone(),
+                            integrity: meta.dist.integrity.clone().or_else(|| {
+                                meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))
+                            }),
+                            dependencies: meta.dependencies.clone().unwrap_or_default(),
+                            optional_dependencies: meta.optional_dependencies.clone(),
+                            os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
+                            cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
+                        };
+                        (resolved, versions)
                     };
-                    (resolved, versions)
-                };
                 self.packument_versions
                     .insert(name.to_string(), versions_cache);
                 resolved
@@ -411,7 +394,10 @@ impl Resolver {
             .get(reqwest::header::ETAG)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let bytes = resp.bytes().await.with_context(|| format!("read packument body for {}", name))?;
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("read packument body for {}", name))?;
         self.progress.net_fetch_finished(1);
 
         // Best-effort persist.
@@ -420,7 +406,8 @@ impl Resolver {
             let _ = tokio::fs::write(&etag_path, etag).await;
         }
 
-        let p = serde_json::from_slice::<Packument>(&bytes).with_context(|| format!("parse packument for {}", name))?;
+        let p = serde_json::from_slice::<Packument>(&bytes)
+            .with_context(|| format!("parse packument for {}", name))?;
         Ok(p)
     }
 
@@ -448,7 +435,9 @@ impl Resolver {
             let cache_dir = cache_dir.clone();
             let progress = progress.clone();
             async move {
-                let p = fetch_packument_with_cache(&registry, cache_dir.as_deref(), &name, &progress).await?;
+                let p =
+                    fetch_packument_with_cache(&registry, cache_dir.as_deref(), &name, &progress)
+                        .await?;
                 Ok::<(String, Packument), anyhow::Error>((name, p))
             }
         }))
@@ -466,7 +455,10 @@ impl Resolver {
 
 fn upsert_resolved(lock: &mut Lockfile, resolved: &ResolvedVersion) -> String {
     let key = Lockfile::key(&resolved.name, &resolved.version);
-    let node = lock.packages.entry(key.clone()).or_insert_with(LockNode::default);
+    let node = lock
+        .packages
+        .entry(key.clone())
+        .or_insert_with(LockNode::default);
     node.name = Some(resolved.name.clone());
     node.version = Some(resolved.version.clone());
     node.tarball = Some(resolved.tarball.clone());
@@ -533,11 +525,7 @@ fn matches_platform(list: &[String], current: &str) -> bool {
             }
         }
     }
-    if has_positive {
-        allowed
-    } else {
-        true
-    }
+    if has_positive { allowed } else { true }
 }
 
 #[derive(Clone)]
@@ -545,63 +533,57 @@ struct ResolveProgress {
     net_total: Arc<AtomicUsize>,
     net_done: Arc<AtomicUsize>,
     cache_hits: Arc<AtomicUsize>,
+    pb: Arc<ProgressBar>,
 }
 
 impl ResolveProgress {
     fn new() -> Self {
+        let pb = ProgressBar::new(0);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=> "),
+        );
+        pb.set_message("Resolving metadata...");
         Self {
             net_total: Arc::new(AtomicUsize::new(0)),
             net_done: Arc::new(AtomicUsize::new(0)),
             cache_hits: Arc::new(AtomicUsize::new(0)),
+            pb: Arc::new(pb),
         }
     }
 
     fn start(&self) -> ProgressGuard {
-        let net_total = self.net_total.clone();
-        let net_done = self.net_done.clone();
-        let cache_hits = self.cache_hits.clone();
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let total = net_total.load(Ordering::Relaxed);
-                        let done = net_done.load(Ordering::Relaxed);
-                        let hits = cache_hits.load(Ordering::Relaxed);
-                        if total > 0 {
-                            eprintln!("Resolving: metadata {done}/{total} (cache hits {hits})");
-                        }
-                    }
-                    _ = &mut rx => break,
-                }
-            }
-        });
-        ProgressGuard { stop: Some(tx) }
+        self.pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        ProgressGuard { pb: self.pb.clone() }
     }
 
     fn net_fetch_started(&self, n: usize) {
         self.net_total.fetch_add(n, Ordering::Relaxed);
+        let total = self.net_total.load(Ordering::Relaxed);
+        self.pb.set_length(total as u64);
     }
 
     fn net_fetch_finished(&self, n: usize) {
         self.net_done.fetch_add(n, Ordering::Relaxed);
+        self.pb.inc(n as u64);
     }
 
     fn cache_hit(&self, n: usize) {
         self.cache_hits.fetch_add(n, Ordering::Relaxed);
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        self.pb.set_message(format!("Resolving (cache: {hits})..."));
     }
 }
 
 struct ProgressGuard {
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    pb: Arc<ProgressBar>,
 }
 
 impl Drop for ProgressGuard {
     fn drop(&mut self) {
-        if let Some(tx) = self.stop.take() {
-            let _ = tx.send(());
-        }
+        self.pb.finish_with_message("Resolved");
     }
 }
 
@@ -662,7 +644,8 @@ async fn fetch_packument_with_cache(
         let bytes = tokio::fs::read(&json_path)
             .await
             .with_context(|| format!("read {}", json_path.display()))?;
-        let p = serde_json::from_slice::<Packument>(&bytes).with_context(|| format!("parse {}", json_path.display()))?;
+        let p = serde_json::from_slice::<Packument>(&bytes)
+            .with_context(|| format!("parse {}", json_path.display()))?;
         return Ok(p);
     }
 
@@ -674,7 +657,10 @@ async fn fetch_packument_with_cache(
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let bytes = resp.bytes().await.with_context(|| format!("read packument body for {}", name))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .with_context(|| format!("read packument body for {}", name))?;
     progress.net_fetch_finished(1);
 
     let _ = tokio::fs::write(&json_path, &bytes).await;
@@ -682,7 +668,8 @@ async fn fetch_packument_with_cache(
         let _ = tokio::fs::write(&etag_path, etag).await;
     }
 
-    let p = serde_json::from_slice::<Packument>(&bytes).with_context(|| format!("parse packument for {}", name))?;
+    let p = serde_json::from_slice::<Packument>(&bytes)
+        .with_context(|| format!("parse packument for {}", name))?;
     Ok(p)
 }
 
@@ -696,7 +683,12 @@ fn existing_child(lock: &Lockfile, parent_key: &str, dep_name: &str) -> Option<S
     }
 }
 
-fn set_requires(lock: &mut Lockfile, parent_key: &str, dep_name: &str, child_key: &str) -> Result<bool> {
+fn set_requires(
+    lock: &mut Lockfile,
+    parent_key: &str,
+    dep_name: &str,
+    child_key: &str,
+) -> Result<bool> {
     if parent_key == "__root__" {
         Ok(lock
             .root
@@ -721,7 +713,9 @@ fn child_key_ok(req: &str, child_key: &str) -> bool {
     if req == "*" || req == "latest" || req.is_empty() {
         return true;
     }
-    let Some((_name, version)) = split_key(child_key) else { return false };
+    let Some((_name, version)) = split_key(child_key) else {
+        return false;
+    };
     if req == version {
         return true;
     }
@@ -746,7 +740,9 @@ fn prune_unreachable(lock: &mut Lockfile) -> Result<()> {
         if !reachable.insert(key.clone()) {
             continue;
         }
-        let Some(node) = lock.packages.get(&key) else { continue };
+        let Some(node) = lock.packages.get(&key) else {
+            continue;
+        };
         for child in node.requires.values() {
             queue.push_back(child.clone());
         }

@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "vx", version, about = "A fast, cache-first npm package installer (prototype).")]
+#[command(
+    name = "vx",
+    version,
+    about = "A fast, cache-first npm package installer (prototype)."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

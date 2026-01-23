@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -52,7 +52,7 @@ pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
                 || e.to_string().contains("File name too long")
                 || e.to_string().contains("path too long")
                 || e.to_string().contains("filename too long");
-            
+
             if is_path_too_long {
                 // If we can't remove due to path length, that's okay - we'll try to overwrite
                 // But check the path length before proceeding
@@ -70,14 +70,14 @@ fn check_path_length(path: &Path) -> Result<()> {
     // Linux: typically 4096 bytes, Windows: 260 chars by default (can be extended)
     // Use the path as bytes for accurate checking on Linux
     let path_bytes = path.as_os_str().len();
-    let max_length = if cfg!(windows) { 
+    let max_length = if cfg!(windows) {
         // Windows: 260 characters (MAX_PATH)
-        260 
-    } else { 
+        260
+    } else {
         // Linux: 4096 bytes (PATH_MAX)
-        4096 
+        4096
     };
-    
+
     if path_bytes > max_length {
         return Err(anyhow!(
             "Path too long ({} bytes, max {}): {}\n\
@@ -104,7 +104,7 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
             || e.to_string().contains("File name too long")
             || e.to_string().contains("path too long")
             || e.to_string().contains("filename too long");
-        
+
         if is_path_too_long {
             return Err(anyhow!(
                 "Path too long: {}\n\
@@ -112,7 +112,8 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
                 Solution: Use flat layout by setting VX_LAYOUT=flat environment variable,\n\
                 or use symlinks by setting VX_LINK_MODE=symlink",
                 path.display()
-            ).context(format!("create dir {}", path.display())));
+            )
+            .context(format!("create dir {}", path.display())));
         }
         return Err(e).with_context(|| format!("create dir {}", path.display()));
     }
@@ -151,7 +152,7 @@ pub fn link_tree(store_dir: &Path, dest_dir: &Path) -> Result<()> {
                         || e.to_string().contains("File name too long")
                         || e.to_string().contains("path too long")
                         || e.to_string().contains("filename too long");
-                    
+
                     if is_path_too_long {
                         return Err(anyhow!(
                             "Path too long: {}\n\
@@ -160,9 +161,8 @@ pub fn link_tree(store_dir: &Path, dest_dir: &Path) -> Result<()> {
                             dst.display()
                         ).context(format!("copy {} -> {}", src.display(), dst.display())));
                     }
-                    return Err(e).with_context(|| {
-                        format!("copy {} -> {}", src.display(), dst.display())
-                    });
+                    return Err(e)
+                        .with_context(|| format!("copy {} -> {}", src.display(), dst.display()));
                 }
             }
             continue;

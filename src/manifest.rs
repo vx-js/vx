@@ -117,7 +117,11 @@ impl Manifest {
         if !raw.is_object() {
             return Err(anyhow!("package.json root must be an object"));
         }
-        let dep_key = if dev { "devDependencies" } else { "dependencies" };
+        let dep_key = if dev {
+            "devDependencies"
+        } else {
+            "dependencies"
+        };
         if raw.get(dep_key).is_none() {
             raw[dep_key] = Value::Object(Default::default());
         }

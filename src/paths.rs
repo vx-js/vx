@@ -64,7 +64,9 @@ pub(crate) fn vx_dir_for_path(path: &Path) -> Result<PathBuf> {
         };
 
         let drive = match prefix.kind() {
-            std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) => (d as char).to_ascii_uppercase(),
+            std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) => {
+                (d as char).to_ascii_uppercase()
+            }
             _ => return Ok(path.join(".vx")),
         };
 
@@ -72,7 +74,8 @@ pub(crate) fn vx_dir_for_path(path: &Path) -> Result<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        Ok(path.join(".vx"))
+        let _ = path; // unused on non-windows
+        home_vx_dir()
     }
 }
 
@@ -97,6 +100,12 @@ fn userprofile_dir() -> Result<PathBuf> {
     Ok(p)
 }
 
+#[cfg(not(windows))]
+fn home_vx_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
+    Ok(PathBuf::from(home).join(".vx"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +122,14 @@ mod tests {
     fn vx_dir_windows_non_c_goes_to_drive_root() {
         let p = vx_dir_windows_for_drive('D', None).unwrap();
         assert_eq!(p, PathBuf::from(r"D:\.vx"));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn vx_dir_unix_goes_to_home() {
+        // Temporarily set HOME for this test
+        std::env::set_var("HOME", "/home/testuser");
+        let p = home_vx_dir().unwrap();
+        assert_eq!(p, PathBuf::from("/home/testuser/.vx"));
     }
 }
