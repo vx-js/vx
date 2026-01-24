@@ -25,6 +25,12 @@ pub struct LockNode {
     pub dependencies: BTreeMap<String, String>,
     #[serde(rename = "optionalDependencies", default)]
     pub optional_dependencies: BTreeMap<String, String>,
+    #[serde(
+        rename = "peerDependencies",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub peer_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub requires: BTreeMap<String, String>,
 }

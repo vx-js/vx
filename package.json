@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {},
+  "name": "vx",
+  "private": true,
+  "version": "0.0.0"
+}

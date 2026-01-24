@@ -308,16 +308,44 @@ fn detect_layout() -> Layout {
 
 fn choose_flat_set(lock: &Lockfile) -> BTreeMap<String, String> {
     let mut chosen: BTreeMap<String, String> = BTreeMap::new();
-    for (name, key) in &lock.root.requires {
-        chosen.entry(name.clone()).or_insert_with(|| key.clone());
-    }
-    // Best-effort: fill additional packages without clobbering.
+
+    // Collect all versions for each package name
+    let mut all_versions: BTreeMap<String, Vec<(String, Option<semver::Version>)>> =
+        BTreeMap::new();
+
     for (key, node) in &lock.packages {
         let Some(name) = node.name.clone() else {
             continue;
         };
-        chosen.entry(name).or_insert_with(|| key.clone());
+        let parsed_version = node
+            .version
+            .as_ref()
+            .and_then(|v| semver::Version::parse(v).ok());
+        all_versions
+            .entry(name)
+            .or_default()
+            .push((key.clone(), parsed_version));
     }
+
+    // For each package, pick the highest version
+    for (name, mut versions) in all_versions {
+        // Sort by version descending (highest first), unparseable versions go last
+        versions.sort_by(|a, b| match (&b.1, &a.1) {
+            (Some(vb), Some(va)) => vb.cmp(va),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        if let Some((key, _)) = versions.into_iter().next() {
+            chosen.insert(name, key);
+        }
+    }
+
+    // Root requires override: if root explicitly requires a version, use that
+    for (name, key) in &lock.root.requires {
+        chosen.insert(name.clone(), key.clone());
+    }
+
     chosen
 }
 

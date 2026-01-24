@@ -149,12 +149,51 @@ impl Resolver {
                         .packages
                         .get(&child_key)
                         .ok_or_else(|| anyhow!("missing node for {child_key}"))?;
-                    if !node.dependencies.is_empty() || !node.optional_dependencies.is_empty() {
+                    
+                    // Collect all deps - peer deps will be handled below
+                    let all_deps = node.dependencies.clone();
+                    let all_optional = node.optional_dependencies.clone();
+                    let peer_deps = node.peer_dependencies.clone();
+                    
+                    if !all_deps.is_empty() || !all_optional.is_empty() || !peer_deps.is_empty() {
                         queue.push_back((
                             child_key.clone(),
-                            node.dependencies.clone(),
-                            node.optional_dependencies.clone(),
+                            all_deps,
+                            all_optional,
                         ));
+                        // Queue peer deps - bun-style auto-install
+                        for (peer_name, peer_req) in peer_deps {
+                            // Skip if already satisfied by root
+                            if lock.root.requires.contains_key(&peer_name) {
+                                continue;
+                            }
+                            // Skip if already resolved in this session
+                            if lock.packages.iter().any(|(_, n)| n.name.as_deref() == Some(&peer_name)) {
+                                continue;
+                            }
+                            // Try to resolve peer dep
+                            match self.resolve_version_cached(&peer_name, &peer_req).await {
+                                Ok(resolved) => {
+                                    let peer_key = upsert_resolved(&mut lock, &resolved);
+                                    set_requires(&mut lock, &child_key, &peer_name, &peer_key)?;
+                                    // Also queue the peer dep's dependencies and peer deps
+                                    let peer_deps_of_peer = resolved.peer_dependencies.clone();
+                                    if !resolved.dependencies.is_empty() 
+                                        || !resolved.optional_dependencies.is_empty()
+                                        || !peer_deps_of_peer.is_empty()
+                                    {
+                                        queue.push_back((
+                                            peer_key,
+                                            resolved.dependencies.clone(),
+                                            resolved.optional_dependencies.clone(),
+                                        ));
+                                    }
+                                }
+                                Err(_) => {
+                                    // Peer dep not found - skip silently
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -173,12 +212,39 @@ impl Resolver {
                         .packages
                         .get(&child_key)
                         .ok_or_else(|| anyhow!("missing node for {child_key}"))?;
-                    if !node.dependencies.is_empty() || !node.optional_dependencies.is_empty() {
+                    
+                    let all_deps = node.dependencies.clone();
+                    let all_optional = node.optional_dependencies.clone();
+                    let peer_deps = node.peer_dependencies.clone();
+                    
+                    if !all_deps.is_empty() || !all_optional.is_empty() || !peer_deps.is_empty() {
                         queue.push_back((
                             child_key.clone(),
-                            node.dependencies.clone(),
-                            node.optional_dependencies.clone(),
+                            all_deps,
+                            all_optional,
                         ));
+                        // Try to resolve peer deps
+                        for (peer_name, peer_req) in peer_deps {
+                            if lock.root.requires.contains_key(&peer_name) {
+                                continue;
+                            }
+                            if lock.packages.values().any(|n| n.name.as_deref() == Some(&peer_name)) {
+                                continue;
+                            }
+                            if let Ok(resolved) = self.resolve_version_cached(&peer_name, &peer_req).await {
+                                let peer_key = upsert_resolved(&mut lock, &resolved);
+                                let _ = set_requires(&mut lock, &child_key, &peer_name, &peer_key);
+                                if !resolved.dependencies.is_empty() 
+                                    || !resolved.optional_dependencies.is_empty() 
+                                {
+                                    queue.push_back((
+                                        peer_key,
+                                        resolved.dependencies.clone(),
+                                        resolved.optional_dependencies.clone(),
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -248,6 +314,8 @@ impl Resolver {
                     .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
                 dependencies: meta.dependencies.clone().unwrap_or_default(),
                 optional_dependencies: meta.optional_dependencies.clone(),
+                peer_dependencies: meta.peer_dependencies.clone(),
+                peer_dependencies_meta: meta.peer_dependencies_meta.clone(),
                 os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
                 cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
             }
@@ -278,6 +346,8 @@ impl Resolver {
                         .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
                     dependencies: meta.dependencies.clone().unwrap_or_default(),
                     optional_dependencies: meta.optional_dependencies.clone(),
+                    peer_dependencies: meta.peer_dependencies.clone(),
+                    peer_dependencies_meta: meta.peer_dependencies_meta.clone(),
                     os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
                     cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
                 }
@@ -310,6 +380,8 @@ impl Resolver {
                             }),
                             dependencies: meta.dependencies.clone().unwrap_or_default(),
                             optional_dependencies: meta.optional_dependencies.clone(),
+                            peer_dependencies: meta.peer_dependencies.clone(),
+                            peer_dependencies_meta: meta.peer_dependencies_meta.clone(),
                             os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
                             cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
                         };
@@ -465,6 +537,7 @@ fn upsert_resolved(lock: &mut Lockfile, resolved: &ResolvedVersion) -> String {
     node.integrity = resolved.integrity.clone();
     node.dependencies = resolved.dependencies.clone();
     node.optional_dependencies = resolved.optional_dependencies.clone();
+    node.peer_dependencies = resolved.peer_dependencies.clone();
     key
 }
 

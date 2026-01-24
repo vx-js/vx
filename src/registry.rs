@@ -110,6 +110,8 @@ impl RegistryClient {
                 .or_else(|| meta.dist.shasum.as_ref().map(|s| format!("sha1-hex:{s}"))),
             dependencies: meta.dependencies.clone().unwrap_or_default(),
             optional_dependencies: meta.optional_dependencies.clone(),
+            peer_dependencies: meta.peer_dependencies.clone(),
+            peer_dependencies_meta: meta.peer_dependencies_meta.clone(),
             os: meta.os.clone().map(|v| v.into_vec()).unwrap_or_default(),
             cpu: meta.cpu.clone().map(|v| v.into_vec()).unwrap_or_default(),
         })
@@ -136,6 +138,8 @@ pub struct ResolvedVersion {
     pub integrity: Option<String>,
     pub dependencies: BTreeMap<String, String>,
     pub optional_dependencies: BTreeMap<String, String>,
+    pub peer_dependencies: BTreeMap<String, String>,
+    pub peer_dependencies_meta: BTreeMap<String, PeerDepMeta>,
     pub os: Vec<String>,
     pub cpu: Vec<String>,
 }
@@ -155,10 +159,20 @@ pub struct PackumentVersion {
     pub dependencies: Option<BTreeMap<String, String>>,
     #[serde(rename = "optionalDependencies", default)]
     pub optional_dependencies: BTreeMap<String, String>,
+    #[serde(rename = "peerDependencies", default)]
+    pub peer_dependencies: BTreeMap<String, String>,
+    #[serde(rename = "peerDependenciesMeta", default)]
+    pub peer_dependencies_meta: BTreeMap<String, PeerDepMeta>,
     #[serde(default)]
     pub os: Option<StringOrVec>,
     #[serde(default)]
     pub cpu: Option<StringOrVec>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PeerDepMeta {
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
