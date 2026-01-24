@@ -85,6 +85,12 @@ impl Resolver {
             VecDeque::new();
         queue.push_back(("__root__".to_string(), root_deps, root_optional));
         let mut visited_nodes: BTreeSet<String> = BTreeSet::new();
+        // Track package names that have been resolved (for fast peer dep dedup)
+        let mut resolved_names: BTreeSet<String> = lock
+            .packages
+            .values()
+            .filter_map(|n| n.name.clone())
+            .collect();
         let _progress_guard = self.progress.start();
 
         let batch_size = std::env::var("VX_RESOLVE_BATCH")
@@ -142,6 +148,7 @@ impl Resolver {
                             .await
                             .with_context(|| format!("resolve {dep_name}@{dep_req}"))?,
                     };
+                    resolved_names.insert(dep_name.clone());
 
                     set_requires(&mut lock, &parent_key, &dep_name, &child_key)?;
 
@@ -155,43 +162,39 @@ impl Resolver {
                     let all_optional = node.optional_dependencies.clone();
                     let peer_deps = node.peer_dependencies.clone();
                     
-                    if !all_deps.is_empty() || !all_optional.is_empty() || !peer_deps.is_empty() {
+                    if !all_deps.is_empty() || !all_optional.is_empty() {
                         queue.push_back((
                             child_key.clone(),
                             all_deps,
                             all_optional,
                         ));
-                        // Queue peer deps - bun-style auto-install
-                        for (peer_name, peer_req) in peer_deps {
-                            // Skip if already satisfied by root
-                            if lock.root.requires.contains_key(&peer_name) {
-                                continue;
-                            }
-                            // Skip if already resolved in this session
-                            if lock.packages.iter().any(|(_, n)| n.name.as_deref() == Some(&peer_name)) {
-                                continue;
-                            }
-                            // Try to resolve peer dep
-                            match self.resolve_version_cached(&peer_name, &peer_req).await {
-                                Ok(resolved) => {
-                                    let peer_key = upsert_resolved(&mut lock, &resolved);
-                                    set_requires(&mut lock, &child_key, &peer_name, &peer_key)?;
-                                    // Also queue the peer dep's dependencies and peer deps
-                                    let peer_deps_of_peer = resolved.peer_dependencies.clone();
-                                    if !resolved.dependencies.is_empty() 
-                                        || !resolved.optional_dependencies.is_empty()
-                                        || !peer_deps_of_peer.is_empty()
-                                    {
-                                        queue.push_back((
-                                            peer_key,
-                                            resolved.dependencies.clone(),
-                                            resolved.optional_dependencies.clone(),
-                                        ));
-                                    }
-                                }
-                                Err(_) => {
-                                    // Peer dep not found - skip silently
-                                }
+                    }
+                    
+                    // Queue peer deps - bun-style auto-install (only top-level, no recursion)
+                    for (peer_name, peer_req) in peer_deps {
+                        // Skip if already satisfied by root or already resolved
+                        if lock.root.requires.contains_key(&peer_name) {
+                            continue;
+                        }
+                        if resolved_names.contains(&peer_name) {
+                            continue;
+                        }
+                        // Mark as resolved to prevent duplicates
+                        resolved_names.insert(peer_name.clone());
+                        
+                        // Try to resolve peer dep
+                        if let Ok(resolved) = self.resolve_version_cached(&peer_name, &peer_req).await {
+                            let peer_key = upsert_resolved(&mut lock, &resolved);
+                            set_requires(&mut lock, &child_key, &peer_name, &peer_key)?;
+                            // Queue peer dep's own dependencies (but NOT its peer deps to avoid chains)
+                            if !resolved.dependencies.is_empty() 
+                                || !resolved.optional_dependencies.is_empty()
+                            {
+                                queue.push_back((
+                                    peer_key,
+                                    resolved.dependencies.clone(),
+                                    resolved.optional_dependencies.clone(),
+                                ));
                             }
                         }
                     }
@@ -205,6 +208,7 @@ impl Resolver {
                     let Some(child_key) = child_key else {
                         continue;
                     };
+                    resolved_names.insert(dep_name.clone());
 
                     set_requires(&mut lock, &parent_key, &dep_name, &child_key)?;
 
@@ -217,32 +221,35 @@ impl Resolver {
                     let all_optional = node.optional_dependencies.clone();
                     let peer_deps = node.peer_dependencies.clone();
                     
-                    if !all_deps.is_empty() || !all_optional.is_empty() || !peer_deps.is_empty() {
+                    if !all_deps.is_empty() || !all_optional.is_empty() {
                         queue.push_back((
                             child_key.clone(),
                             all_deps,
                             all_optional,
                         ));
-                        // Try to resolve peer deps
-                        for (peer_name, peer_req) in peer_deps {
-                            if lock.root.requires.contains_key(&peer_name) {
-                                continue;
-                            }
-                            if lock.packages.values().any(|n| n.name.as_deref() == Some(&peer_name)) {
-                                continue;
-                            }
-                            if let Ok(resolved) = self.resolve_version_cached(&peer_name, &peer_req).await {
-                                let peer_key = upsert_resolved(&mut lock, &resolved);
-                                let _ = set_requires(&mut lock, &child_key, &peer_name, &peer_key);
-                                if !resolved.dependencies.is_empty() 
-                                    || !resolved.optional_dependencies.is_empty() 
-                                {
-                                    queue.push_back((
-                                        peer_key,
-                                        resolved.dependencies.clone(),
-                                        resolved.optional_dependencies.clone(),
-                                    ));
-                                }
+                    }
+                    
+                    // Try to resolve peer deps (only top-level, no recursion)
+                    for (peer_name, peer_req) in peer_deps {
+                        if lock.root.requires.contains_key(&peer_name) {
+                            continue;
+                        }
+                        if resolved_names.contains(&peer_name) {
+                            continue;
+                        }
+                        resolved_names.insert(peer_name.clone());
+                        
+                        if let Ok(resolved) = self.resolve_version_cached(&peer_name, &peer_req).await {
+                            let peer_key = upsert_resolved(&mut lock, &resolved);
+                            let _ = set_requires(&mut lock, &child_key, &peer_name, &peer_key);
+                            if !resolved.dependencies.is_empty() 
+                                || !resolved.optional_dependencies.is_empty() 
+                            {
+                                queue.push_back((
+                                    peer_key,
+                                    resolved.dependencies.clone(),
+                                    resolved.optional_dependencies.clone(),
+                                ));
                             }
                         }
                     }
