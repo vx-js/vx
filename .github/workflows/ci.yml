@@ -215,7 +215,7 @@ jobs:
       - name: Set canary version (and optionalDependencies)
         working-directory: npm/vx
         env:
-          CANAfRY_VERSION: ${{ needs.canary-version.outputs.version }}
+          CANARY_VERSION: ${{ needs.canary-version.outputs.version }}
         run: node ../../scripts/ci/set-canary-version-with-deps.js
 
       - name: Publish @vx-js/vx (canary)
